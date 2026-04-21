@@ -14,3 +14,7 @@ guest/init_stage2
 KVMTOOLS-VERSION-FILE
 /x86/bios/bios.bin
 /x86/bios/bios.bin.elf
+initrd*
+*.img
+*.raw
+*.cpio
