@@ -583,32 +583,36 @@ void kvm__continue(struct kvm *kvm)
 
 void kvm__pause(struct kvm *kvm)
 {
-	int i, paused_vcpus = 0;
+    int i, paused_vcpus = 0;
 
-	mutex_lock(&pause_lock);
+    mutex_lock(&pause_lock);
 
-	/* Check if the guest is running */
-	if (!kvm->cpus || !kvm->cpus[0] || kvm->cpus[0]->thread == 0)
-		return;
+    /* Check if the guest is running */
+    if (!kvm->cpus || !kvm->cpus[0] || kvm->cpus[0]->thread == 0) {
+        return;
+    }
 
-	pause_event = eventfd(0, 0);
-	if (pause_event < 0)
-		die("Failed creating pause notification event");
-	for (i = 0; i < kvm->nrcpus; i++) {
-		if (kvm->cpus[i]->is_running && kvm->cpus[i]->paused == 0)
-			pthread_kill(kvm->cpus[i]->thread, SIGKVMPAUSE);
-		else
-			paused_vcpus++;
-	}
+    pause_event = eventfd(0, 0);
+    if (pause_event < 0)
+        die("Failed creating pause notification event");
 
-	while (paused_vcpus < kvm->nrcpus) {
-		u64 cur_read;
+    for (i = 0; i < kvm->nrcpus; i++) {
+        if (kvm->cpus[i]->is_running && kvm->cpus[i]->paused == 0)
+            pthread_kill(kvm->cpus[i]->thread, SIGKVMPAUSE);
+        else
+            paused_vcpus++;
+    }
 
-		if (read(pause_event, &cur_read, sizeof(cur_read)) < 0)
-			die("Failed reading pause event");
-		paused_vcpus += cur_read;
-	}
-	close(pause_event);
+    while (paused_vcpus < kvm->nrcpus) {
+        u64 cur_read;
+
+        if (read(pause_event, &cur_read, sizeof(cur_read)) < 0)
+            die("Failed reading pause event");
+
+        paused_vcpus += cur_read;
+    }
+
+    close(pause_event);
 }
 
 void kvm__fork(struct kvm *kvm, bool detach_term, char *new_name)

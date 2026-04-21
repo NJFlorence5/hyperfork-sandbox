@@ -192,19 +192,16 @@ int tty_parser(const struct option *opt, const char *arg, int unset)
 
 static int term__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 {
-	/* TODO: generalize this */
-	if (ctxt->detach_term)
-		term_detach(0);
-	else
-		term_set_tty(0);
+    if (ctxt->detach_term)
+        term_detach(0);
+    else
+        term_set_tty(0);
 
-	/* Use our own blocking thread to read stdin, don't require a tick */
-	if(pthread_create(&term_poll_thread, NULL, term_poll_thread_loop,kvm))
-		die("Unable to create console input poll thread\n");
+    if (pthread_create(&term_poll_thread, NULL, term_poll_thread_loop, kvm))
+        die("Unable to create console input poll thread\n");
 
-	signal(SIGTERM, term_sig_cleanup);
-
-	return 0;
+    signal(SIGTERM, term_sig_cleanup);
+    return 0;
 }
 base_post_copy(term__post_copy);
 
@@ -213,8 +210,8 @@ static int term_init(struct kvm *kvm)
 	struct termios term;
 	int i, r;
 
-	term_detach(0);
-  return 0;
+	//term_detach(0);
+  //return 0;
 
 	for (i = 0; i < TERM_MAX_DEVS; i++)
 		if (term_fds[i][TERM_FD_IN] == 0) {

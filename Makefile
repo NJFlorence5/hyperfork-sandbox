@@ -1,5 +1,5 @@
 #
-# Define WERROR=0 to disable -Werror.
+# Define WERROR=0 to disable -Wno-error.
 #
 
 ifeq ($(strip $(V)),)
@@ -369,7 +369,7 @@ WARNINGS += -Wno-format-nonliteral
 CFLAGS	+= $(WARNINGS)
 
 ifneq ($(WERROR),0)
-	CFLAGS += -Werror
+	CFLAGS += -Wno-error
 endif
 
 all: $(PROGRAM) $(PROGRAM_ALIAS)
