@@ -60,6 +60,7 @@ struct kvm_mem_bank {
 struct pre_copy_context {
   u8 detach_term;
   char *new_name;
+  u64 trace_start_ns;
   /* VCPU internal state */
   struct kvm_regs *regs;
   struct kvm_sregs *sregs;
@@ -110,6 +111,10 @@ int kvm__init(struct kvm *kvm);
 int kvm__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt);
 int kvm__post_copy_parent(struct kvm *kvm, struct pre_copy_context *ctxt);
 int kvm__pre_copy(struct kvm *kvm, struct pre_copy_context *ctxt);
+u64 kvm__time_ns(void);
+double kvm__elapsed_ms(u64 start_ns);
+void kvm__fork_trace(struct pre_copy_context *ctxt, const char *fmt, ...)
+	__attribute__((format (printf, 2, 3)));
 struct kvm *kvm__new(void);
 int kvm__recommended_cpus(struct kvm *kvm);
 int kvm__max_cpus(struct kvm *kvm);

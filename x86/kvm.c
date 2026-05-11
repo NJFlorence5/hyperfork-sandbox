@@ -168,14 +168,17 @@ void kvm__arch_init(struct kvm *kvm, const char *hugetlbfs_path, u64 ram_size)
 
 int kvm__arch_pre_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 {
+	kvm__fork_trace(ctxt, "x86 pre-copy: KVM_GET_IRQCHIP PIC master start");
 	ctxt->irqchip[0].chip_id = KVM_IRQCHIP_PIC_MASTER;
 	if (ioctl(kvm->vm_fd, KVM_GET_IRQCHIP, &ctxt->irqchip[0]) < 0)
 		die_perror("KVM_GET_IRQCHIP failed");
 
+	kvm__fork_trace(ctxt, "x86 pre-copy: KVM_GET_IRQCHIP PIC slave start");
 	ctxt->irqchip[1].chip_id = KVM_IRQCHIP_PIC_SLAVE;
 	if (ioctl(kvm->vm_fd, KVM_GET_IRQCHIP, &ctxt->irqchip[1]) < 0)
 		die_perror("KVM_GET_IRQCHIP failed");
 
+	kvm__fork_trace(ctxt, "x86 pre-copy: KVM_GET_IRQCHIP IOAPIC start");
 	ctxt->irqchip[2].chip_id = KVM_IRQCHIP_IOAPIC;
 	if (ioctl(kvm->vm_fd, KVM_GET_IRQCHIP, &ctxt->irqchip[2]) < 0)
 		die_perror("KVM_GET_IRQCHIP failed");
@@ -183,12 +186,15 @@ int kvm__arch_pre_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 	if (ioctl(kvm->vm_fd, KVM_GET_IRQCHIP, &ctxt->irqchip[2]) < 0)
 		die_perror("KVM_GET_IRQCHIP IOAPIC failed");
 
+	kvm__fork_trace(ctxt, "x86 pre-copy: KVM_GET_CLOCK start");
 	if (ioctl(kvm->vm_fd, KVM_GET_CLOCK, &ctxt->clock_data) < 0)
 		die_perror("KVM_GET_CLOCK failed");
 
+	kvm__fork_trace(ctxt, "x86 pre-copy: KVM_GET_PIT2 start");
 	if (ioctl(kvm->vm_fd, KVM_GET_PIT2, &ctxt->pit2) < 0)
 		die_perror("KVM_GET_PIT2 failed");
 
+	kvm__fork_trace(ctxt, "x86 pre-copy: arch state capture complete");
 	return 0;
 }
 
@@ -198,23 +204,38 @@ void kvm__arch_post_copy(struct kvm *kvm, const char *hugetlbfs_path, u64 ram_si
 	int ret;
 	void *new_ram;
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_TSS_ADDR start");
 	ret = ioctl(kvm->vm_fd, KVM_SET_TSS_ADDR, 0xfffbd000);
 	if (ret < 0)
 		die_perror("KVM_SET_TSS_ADDR ioctl");
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_TSS_ADDR complete");
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_CREATE_PIT2 start");
 	ret = ioctl(kvm->vm_fd, KVM_CREATE_PIT2, &pit_config);
 	if (ret < 0)
 		die_perror("KVM_CREATE_PIT2 ioctl");
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_CREATE_PIT2 complete");
 
 	/* We've forked at this point, so we may or may not need to copy our memory state */
 	if (ram_size < KVM_32BIT_GAP_START) {
 		kvm->ram_size = ram_size;
 		if (hugetlbfs_path) {
+			kvm__fork_trace(ctxt, "x86 post-copy: remap/copy RAM start bytes=%llu",
+				(unsigned long long)ram_size);
 			new_ram = mmap_anon_or_hugetlbfs(kvm, hugetlbfs_path, ram_size);
 			memcpy(new_ram, kvm->ram_start, ram_size);
+			kvm__fork_trace(ctxt, "x86 post-copy: remap/copy RAM complete bytes=%llu",
+				(unsigned long long)ram_size);
+		} else {
+			kvm__fork_trace(ctxt, "x86 post-copy: inherited COW RAM bytes=%llu",
+				(unsigned long long)ram_size);
 		}
 	} else {
 		if (hugetlbfs_path) {
+			u64 mapped_size = ram_size + KVM_32BIT_GAP_SIZE;
+
+			kvm__fork_trace(ctxt, "x86 post-copy: remap/copy RAM with 32-bit gap start bytes=%llu",
+				(unsigned long long)mapped_size);
 			new_ram = mmap_anon_or_hugetlbfs(kvm, hugetlbfs_path, ram_size + KVM_32BIT_GAP_SIZE);
 			memcpy(new_ram, kvm->ram_start, ram_size + KVM_32BIT_GAP_SIZE);
 			if (kvm->ram_start != MAP_FAILED)
@@ -223,6 +244,11 @@ void kvm__arch_post_copy(struct kvm *kvm, const char *hugetlbfs_path, u64 ram_si
 				 * if we accidently write to it, we will know.
 				 */
 				mprotect(kvm->ram_start + KVM_32BIT_GAP_START, KVM_32BIT_GAP_SIZE, PROT_NONE);
+			kvm__fork_trace(ctxt, "x86 post-copy: remap/copy RAM with 32-bit gap complete bytes=%llu",
+				(unsigned long long)mapped_size);
+		} else {
+			kvm__fork_trace(ctxt, "x86 post-copy: inherited COW RAM with 32-bit gap bytes=%llu",
+				(unsigned long long)(ram_size + KVM_32BIT_GAP_SIZE));
 		}
 
 		kvm->ram_size = ram_size + KVM_32BIT_GAP_SIZE;
@@ -231,30 +257,41 @@ void kvm__arch_post_copy(struct kvm *kvm, const char *hugetlbfs_path, u64 ram_si
 		die("out of memory");
 
 	madvise(kvm->ram_start, kvm->ram_size, MADV_MERGEABLE);
+	kvm__fork_trace(ctxt, "x86 post-copy: MADV_MERGEABLE complete bytes=%llu",
+		(unsigned long long)kvm->ram_size);
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_CREATE_IRQCHIP start");
 	ret = ioctl(kvm->vm_fd, KVM_CREATE_IRQCHIP);
 	if (ret < 0)
 		die_perror("KVM_CREATE_IRQCHIP ioctl");
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_CREATE_IRQCHIP complete");
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_IRQCHIP PIC master start");
 	if (ioctl(kvm->vm_fd, KVM_SET_IRQCHIP, &ctxt->irqchip[0]) < 0)
 		die_perror("KVM_SET_IRQCHIP MASTER failed");
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_IRQCHIP PIC slave start");
 	if (ioctl(kvm->vm_fd, KVM_SET_IRQCHIP, &ctxt->irqchip[1]) < 0)
 		die_perror("KVM_SET_IRQCHIP SLAVE failed");
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_IRQCHIP IOAPIC start");
 	if (ioctl(kvm->vm_fd, KVM_SET_IRQCHIP, &ctxt->irqchip[2]) < 0)
 		die_perror("KVM_SET_IRQCHIP IOAPIC failed");
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_IRQCHIP IOAPIC verify start");
 	if (ioctl(kvm->vm_fd, KVM_SET_IRQCHIP, &ctxt->irqchip[2]) < 0)
 		die_perror("KVM_SET_IRQCHIP IOAPIC failed");
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_PIT2 start");
 	if (ioctl(kvm->vm_fd, KVM_SET_PIT2, &ctxt->pit2) < 0)
 		die_perror("KVM_SET_PIT2 failed");
 
 	ctxt->clock_data.flags = 0;
 
+	kvm__fork_trace(ctxt, "x86 post-copy: KVM_SET_CLOCK start");
 	if (ioctl(kvm->vm_fd, KVM_SET_CLOCK, &ctxt->clock_data) < 0)
 		die_perror("KVM_SET_CLOCK failed");
+	kvm__fork_trace(ctxt, "x86 post-copy: arch state restore complete");
 }
 
 void kvm__arch_delete_ram(struct kvm *kvm)

@@ -14,6 +14,7 @@
 #define DEFAULT_HOST_MAC	"02:01:01:01:01:01"
 #define DEFAULT_SCRIPT		"none"
 #define DEFAULT_SANDBOX_FILENAME "guest/sandbox.sh"
+#define DEFAULT_RAM_SIZE_MB	(4096ULL)
 
 #define MIN_RAM_SIZE_MB		(64ULL)
 #define MIN_RAM_SIZE_BYTE	(MIN_RAM_SIZE_MB << MB_SHIFT)

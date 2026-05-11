@@ -12,7 +12,6 @@
 #include <linux/list.h>
 #include <linux/err.h>
 
-#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/un.h>
@@ -68,6 +67,41 @@ extern struct kvm_ext kvm_req_ext[];
 static char kvm_dir[PATH_MAX];
 
 extern __thread struct kvm_cpu *current_kvm_cpu;
+
+u64 kvm__time_ns(void)
+{
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
+		die("clock_gettime(CLOCK_MONOTONIC) failed");
+
+	return (u64)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
+double kvm__elapsed_ms(u64 start_ns)
+{
+	return (kvm__time_ns() - start_ns) / 1000000.0;
+}
+
+void kvm__fork_trace(struct pre_copy_context *ctxt, const char *fmt, ...)
+{
+	char msg[256];
+	va_list args;
+
+	va_start(args, fmt);
+	vsnprintf(msg, sizeof(msg), fmt, args);
+	va_end(args);
+
+	pr_info("kvm-fork[%d]: +%.3f ms %s",
+		getpid(), kvm__elapsed_ms(ctxt->trace_start_ns), msg);
+}
+
+static void kvm__fork_trace_separator(struct pre_copy_context *ctxt,
+				      const char *label)
+{
+	pr_info("kvm-fork[%d]: +%.3f ms ==================== %s ====================",
+		getpid(), kvm__elapsed_ms(ctxt->trace_start_ns), label);
+}
 
 static int set_dir(const char *fmt, va_list args)
 {
@@ -427,6 +461,7 @@ core_init(kvm__init);
 
 int kvm__pre_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 {
+	kvm__fork_trace(ctxt, "core pre-copy: arch state capture start");
 	return kvm__arch_pre_copy(kvm, ctxt);
 }
 core_pre_copy(kvm__pre_copy);
@@ -436,9 +471,11 @@ int kvm__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 	int ret;
 	struct kvm_mem_bank *bank, *tmp;
 
+	kvm__fork_trace(ctxt, "child core post-copy: close inherited KVM fds");
 	close(kvm->sys_fd);
 	close(kvm->vm_fd);
 
+	kvm__fork_trace(ctxt, "child core post-copy: open %s start", kvm->cfg.dev);
 	kvm->sys_fd = open(kvm->cfg.dev, O_RDWR);
 	if (kvm->sys_fd < 0) {
 		if (errno == ENOENT)
@@ -454,7 +491,10 @@ int kvm__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 		ret = -errno;
 		return ret;
 	}
+	kvm__fork_trace(ctxt, "child core post-copy: open %s complete sys_fd=%d",
+		kvm->cfg.dev, kvm->sys_fd);
 
+	kvm__fork_trace(ctxt, "child core post-copy: KVM_CREATE_VM start");
 	kvm->vm_fd = ioctl(kvm->sys_fd, KVM_CREATE_VM, KVM_VM_TYPE);
 	if (kvm->vm_fd < 0) {
 		perror("SADF");
@@ -463,15 +503,24 @@ int kvm__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 		ret = kvm->vm_fd;
 		return ret;
 	}
+	kvm__fork_trace(ctxt, "child core post-copy: KVM_CREATE_VM complete vm_fd=%d",
+		kvm->vm_fd);
 
+	kvm__fork_trace(ctxt, "child core post-copy: arch post-copy start");
 	kvm__arch_post_copy(kvm, kvm->cfg.hugetlbfs_path, kvm->cfg.ram_size, ctxt);
+	kvm__fork_trace(ctxt, "child core post-copy: arch post-copy complete");
 
+	kvm__fork_trace(ctxt, "child core post-copy: clear old mem bank list start");
 	list_for_each_entry_safe(bank, tmp, &kvm->mem_banks, list) {
 		list_del(&bank->list);
 		free(bank);
 	}
+	kvm__fork_trace(ctxt, "child core post-copy: clear old mem bank list complete");
 
+	kvm__fork_trace(ctxt, "child core post-copy: register RAM slots start");
 	kvm__init_ram(kvm);
+	kvm__fork_trace(ctxt, "child core post-copy: register RAM slots complete slots=%u",
+		kvm->mem_slots);
 
 	return 0;
 }
@@ -481,17 +530,22 @@ int kvm__post_copy_parent(struct kvm *kvm, struct pre_copy_context *ctxt)
 {
 	struct kvm_mem_bank *bank, *tmp;
 
-  if (!kvm->cfg.cleargmap)
-    return 0;
+	if (!kvm->cfg.cleargmap) {
+		kvm__fork_trace(ctxt, "parent post-copy: cleargmap disabled");
+		return 0;
+	}
 
+	kvm__fork_trace(ctxt, "parent post-copy: rebuild mem bank list start");
 	list_for_each_entry_safe(bank, tmp, &kvm->mem_banks, list) {
 		list_del(&bank->list);
 		free(bank);
 	}
 
 	kvm__init_ram(kvm);
+	kvm__fork_trace(ctxt, "parent post-copy: rebuild mem bank list complete slots=%u",
+		kvm->mem_slots);
 
-  return 0;
+	return 0;
 }
 core_post_copy_parent(kvm__post_copy_parent);
 
@@ -617,52 +671,66 @@ void kvm__pause(struct kvm *kvm)
 
 void kvm__fork(struct kvm *kvm, bool detach_term, char *new_name)
 {
-	struct timeval tm;
-	gettimeofday(&tm, NULL);
-
+	u64 fork_start_ns = kvm__time_ns();
 	static char name[20];
 	struct pre_copy_context ctxt;
+	int pid;
+
 	ctxt.detach_term = detach_term;
 	ctxt.new_name = new_name;
+	ctxt.trace_start_ns = fork_start_ns;
+
+	kvm__fork_trace(&ctxt, "start");
 
 	if (init_list__pre_copy(kvm, &ctxt) < 0)
 		die ("Pre copy failed");
+	kvm__fork_trace(&ctxt, "pre-copy complete");
 
-  fflush(stdout);
-  if (kvm->cfg.cleargmap) {
-    for (unsigned i = 0; i < kvm->mem_slots; i ++) {
-      struct kvm_userspace_memory_region mem = (struct kvm_userspace_memory_region) {
-        .slot			= i,
-        .guest_phys_addr	= 0,
-        .memory_size		= 0,
-        .userspace_addr		= 0,
-      };
-      int r = ioctl(kvm->vm_fd, KVM_SET_USER_MEMORY_REGION, &mem);
-      if (r < 0)
-        die("Failed to free mem");
-    }
-    kvm->mem_slots = 0;
-  }
-	int pid = fork();
+	fflush(stdout);
+	if (kvm->cfg.cleargmap) {
+		unsigned freed_slots = kvm->mem_slots;
+
+		kvm__fork_trace(&ctxt, "cleargmap start slots=%u", freed_slots);
+		for (unsigned i = 0; i < kvm->mem_slots; i ++) {
+			struct kvm_userspace_memory_region mem = (struct kvm_userspace_memory_region) {
+				.slot			= i,
+				.guest_phys_addr	= 0,
+				.memory_size		= 0,
+				.userspace_addr		= 0,
+			};
+			int r = ioctl(kvm->vm_fd, KVM_SET_USER_MEMORY_REGION, &mem);
+			if (r < 0)
+				die("Failed to free mem");
+		}
+		kvm->mem_slots = 0;
+		kvm__fork_trace(&ctxt, "cleargmap complete slots=%u", freed_slots);
+	}
+	kvm__fork_trace(&ctxt, "fork syscall start");
+	pid = fork();
 	if (pid < 0) {
 		die("Failed to fork process");
 	} else if (pid == 0) {
 		// Child
+		kvm__fork_trace(&ctxt, "child fork return");
 		sprintf(name, "guest-%u", getpid());
 		kvm->cfg.guest_name = name;
 
 		if (init_list__post_copy(kvm, &ctxt) < 0)
 			die ("Post copy failed");
+		kvm__fork_trace(&ctxt, "child post-copy complete");
 
 		/* Make the PGID unique from the parent such that we can
 		 * re-attach the process to a new terminal window. */
 		if (setpgid(0,0)) {
 			die("Failed to set PGID of child");
 		}
+		kvm__fork_trace(&ctxt, "child pgid set");
 
 		/* Unpause the child VM */
 		kvm->vm_state = KVM_VMSTATE_RUNNING;
 		kvm__continue(kvm);
+		kvm__fork_trace(&ctxt, "child vm resumed");
+		kvm__fork_trace_separator(&ctxt, "child fork trace complete");
 
 		/* Start VCPU threads and take over duties of main lkvm run thread.
 		 * We have already created another kvm_ipc thread, so here
@@ -675,8 +743,11 @@ void kvm__fork(struct kvm *kvm, bool detach_term, char *new_name)
 
 		exit(0);
 	} else {
+		kvm__fork_trace(&ctxt, "parent fork return child_pid=%d", pid);
 		if (init_list__post_copy_parent(kvm, &ctxt) < 0)
 			die ("Post copy parent failed");
+		kvm__fork_trace(&ctxt, "parent post-copy complete child_pid=%d", pid);
+		kvm__fork_trace_separator(&ctxt, "parent fork trace complete");
 	}
 }
 

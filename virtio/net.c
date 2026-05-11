@@ -405,18 +405,47 @@ static bool virtio_net__tap_create(struct net_dev *ndev)
 		}
 	}
 
+
+
 	if (!macvtap &&
-	    virtio_net_request_tap(ndev, &ifr, params->tapif) < 0) {
-		pr_warning("Config tap device error. Are you root?");
-		goto fail;
-	}
+            virtio_net_request_tap(ndev, &ifr, params->tapif) < 0) {
+            FILE *dbg = fopen("/tmp/hyperfork_net_debug.log", "a");
+            if (dbg) {
+                    fprintf(dbg,
+                            "tap_create: FAILED tapif=%s errno=%d (%s)\n",
+                            params->tapif ? params->tapif : "(null)",
+                            errno, strerror(errno));
+                    fflush(dbg);
+                    fclose(dbg);
+            }
+            pr_warning("Config tap device error. Are you root?");
+            goto fail;
+        }
+
+	pr_info("tap_create: tapif=%s tap_name=%s tap_fd=%d",
+        params->tapif ? params->tapif : "(null)",
+        ndev->tap_name, ndev->tap_fd);
+
+	{
+            FILE *dbg = fopen("/tmp/hyperfork_net_debug.log", "a");
+            if (dbg) {
+                    fprintf(dbg, "tap_create: tapif=%s tap_name=%s tap_fd=%d\n",
+                        params->tapif ? params->tapif : "(null)",
+                        ndev->tap_name,
+                        ndev->tap_fd);
+                    fflush(dbg);
+                    fclose(dbg);
+            }
+        }
 
 	/*
 	 * The UFO support had been removed from kernel in commit:
 	 * ID: fb652fdfe83710da0ca13448a41b7ed027d0a984
 	 * https://www.spinics.net/lists/netdev/msg443562.html
 	 * In oder to support the older kernels without this commit,
-	 * we set the TUN_F_UFO to offload by default to test the status of
+	pr_info("tap_create: tapif=%s tap_name=%s tap_fd=%d",
+        params->tapif ? params->tapif : "(null)",
+        ndev->tap_name, ndev->tap_fd); * we set the TUN_F_UFO to offload by default to test the status of
 	 * UFO kernel support.
 	 */
 	ndev->tap_ufo = true;
@@ -1013,6 +1042,251 @@ int virtio_net__init(struct kvm *kvm)
 	return 0;
 }
 virtio_dev_init(virtio_net__init);
+
+int virtio_net__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
+{
+        struct net_dev *ndev;
+        int i;
+        FILE *dbg = fopen("/tmp/hyperfork_net_debug.log", "a");
+
+        if (dbg) {
+                fprintf(dbg, "==== virtio_net__post_copy called for kvm=%p ====\n", kvm);
+                fflush(dbg);
+        }
+
+        list_for_each_entry(ndev, &ndevs, list) {
+                if (ndev->kvm != kvm) {
+                        FILE *dbg = fopen("/tmp/hyperfork_net_debug.log", "a");
+                        if (dbg) {
+                                fprintf(dbg,
+                                    "post_copy: rebinding ndev %p from old kvm=%p to new kvm=%p\n",
+                                    ndev, ndev->kvm, kvm);
+                                fflush(dbg);
+                                fclose(dbg);
+                        }
+
+                        ndev->kvm = kvm;
+                }
+
+                if (dbg) {
+                        fprintf(dbg,
+                                "post_copy: matched ndev=%p mode=%d tapif=%s tap_fd=%d vhost_fd=%d queue_pairs=%u\n",
+                                ndev,
+                                ndev->mode,
+                                (ndev->params && ndev->params->tapif) ? ndev->params->tapif : "(null)",
+                                ndev->tap_fd,
+                                ndev->vhost_fd,
+                                ndev->queue_pairs);
+                        fflush(dbg);
+                }
+
+                if (ndev->mode == NET_MODE_TAP) {
+                        int tap_idx;
+                        char tap_name[32];
+
+                        if (dbg) {
+                                fprintf(dbg,
+                                        "post_copy: entering TAP restore old tapif=%s\n",
+                                        (ndev->params && ndev->params->tapif) ? ndev->params->tapif : "(null)");
+                                fflush(dbg);
+                        }
+
+                        if (ndev->tap_fd >= 0)
+                                close(ndev->tap_fd);
+                        ndev->tap_fd = -1;
+
+                        if (ndev->vhost_fd > 0)
+                                close(ndev->vhost_fd);
+                        ndev->vhost_fd = 0;
+
+                        /* 🔧 FIX: find next available tapX instead of hardcoding tap1 */
+                        for (tap_idx = 1; tap_idx < 64; tap_idx++) {
+                                snprintf(tap_name, sizeof(tap_name), "tap%d", tap_idx);
+
+                                if (ndev->params && ndev->params->tapif) {
+                                        free((void *)ndev->params->tapif);
+                                        ndev->params->tapif = NULL;
+                                }
+
+                                if (ndev->params)
+                                        ndev->params->tapif = strdup(tap_name);
+
+                                if (dbg) {
+                                        fprintf(dbg,
+                                                "post_copy: trying child TAP %s\n",
+                                                (ndev->params && ndev->params->tapif) ? ndev->params->tapif : "(null)");
+                                        fflush(dbg);
+                                }
+
+                                if (virtio_net__tap_create(ndev))
+                                        break;
+
+                                if (errno != EBUSY) {
+                                        if (dbg) {
+                                                fprintf(dbg,
+                                                        "post_copy: virtio_net__tap_create FAILED for tapif=%s errno=%d (%s)\n",
+                                                        (ndev->params && ndev->params->tapif) ? ndev->params->tapif : "(null)",
+                                                        errno, strerror(errno));
+                                                fflush(dbg);
+                                                fclose(dbg);
+                                        }
+                                        return -1;
+                                }
+                        }
+
+                        if (tap_idx == 64) {
+                                if (dbg) {
+                                        fprintf(dbg, "post_copy: no available tap devices found\n");
+                                        fflush(dbg);
+                                        fclose(dbg);
+                                }
+                                return -1;
+                        }
+
+                        if (dbg) {
+                                fprintf(dbg,
+                                        "post_copy: tap_create OK tapif=%s tap_name=%s tap_fd=%d\n",
+                                        (ndev->params && ndev->params->tapif) ? ndev->params->tapif : "(null)",
+                                        ndev->tap_name,
+                                        ndev->tap_fd);
+                                fflush(dbg);
+                        }
+
+                        {
+			    static int fork_mac_counter = 1;
+			    unsigned char mac[6];
+
+    			/* base MAC */
+    			mac[0] = 0x02;
+    			mac[1] = 0x15;
+    			mac[2] = 0x15;
+    			mac[3] = 0x15;
+    			mac[4] = 0x15;
+    			mac[5] = 0x15 + fork_mac_counter++;
+
+    			int j;
+    			for (j = 0; j < 6; j++) {
+        			ndev->config.mac[j] = mac[j];
+        			ndev->info.guest_mac.addr[j] = mac[j];
+
+        			if (ndev->params)
+            			ndev->params->guest_mac[j] = mac[j];
+    			}
+
+    			if (dbg) {
+        			fprintf(dbg,
+            			"post_copy: assigned new MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+            			mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        			fflush(dbg);
+			    }
+			}
+
+                        if (!virtio_net__tap_init(ndev)) {
+                                if (dbg) {
+                                        fprintf(dbg,
+                                                "post_copy: virtio_net__tap_init FAILED tapif=%s tap_name=%s\n",
+                                                (ndev->params && ndev->params->tapif) ? ndev->params->tapif : "(null)",
+                                                ndev->tap_name);
+                                        fflush(dbg);
+                                        fclose(dbg);
+                                }
+                                return -1;
+                        }
+
+                        if (dbg) {
+                                fprintf(dbg,
+                                        "post_copy: tap_init OK tap_name=%s tap_fd=%d\n",
+                                        ndev->tap_name,
+                                        ndev->tap_fd);
+                                fflush(dbg);
+                        }
+
+                        if (ndev->params->vhost) {
+                                if (dbg) {
+                                        fprintf(dbg,
+                                                "post_copy: initializing vhost for tap_name=%s\n",
+                                                ndev->tap_name);
+                                        fflush(dbg);
+                                }
+
+                                virtio_net__vhost_init(kvm, ndev);
+
+                                if (dbg) {
+                                        fprintf(dbg,
+                                                "post_copy: vhost init done vhost_fd=%d\n",
+                                                ndev->vhost_fd);
+                                        fflush(dbg);
+                                }
+                        }
+                }
+
+                for (i = 0; i < (int)(ndev->queue_pairs * 2 + 1); i++) {
+                        struct net_dev_queue *queue = &ndev->queues[i];
+
+                        queue->id   = i;
+                        queue->ndev = ndev;
+
+                        mutex_init(&queue->lock);
+                        pthread_cond_init(&queue->cond, NULL);
+
+                        if (dbg) {
+                                fprintf(dbg,
+                                        "post_copy: queue %d setup ctrl=%d vhost_fd=%d\n",
+                                        i, is_ctrl_vq(ndev, i), ndev->vhost_fd);
+                                fflush(dbg);
+                        }
+
+                        if (is_ctrl_vq(ndev, i)) {
+                                pthread_create(&queue->thread, NULL,
+                                               virtio_net_ctrl_thread, queue);
+                        } else if (ndev->vhost_fd == 0) {
+                                if (i & 1)
+                                        pthread_create(&queue->thread, NULL,
+                                                       virtio_net_tx_thread, queue);
+                                else
+                                        pthread_create(&queue->thread, NULL,
+                                                       virtio_net_rx_thread, queue);
+                        }
+                }
+
+                if (ndev->vhost_fd) {
+                        struct vhost_vring_file file;
+                        int vq_count = ndev->queue_pairs * 2;
+
+                        file.fd = ndev->tap_fd;
+
+                        for (i = 0; i < vq_count; i++) {
+                                file.index = i;
+                                if (ioctl(ndev->vhost_fd, VHOST_NET_SET_BACKEND, &file) != 0) {
+                                        if (dbg) {
+                                                fprintf(dbg,
+                                                        "post_copy: VHOST_NET_SET_BACKEND FAILED index=%d fd=%d errno=%d (%s)\n",
+                                                        i, file.fd, errno, strerror(errno));
+                                                fflush(dbg);
+                                                fclose(dbg);
+                                        }
+                                        return -1;
+                                }
+                        }
+
+                        if (dbg) {
+                                fprintf(dbg,
+                                        "post_copy: vhost backend rebound to tap_fd=%d\n",
+                                        ndev->tap_fd);
+                                fflush(dbg);
+                        }
+                }
+        }
+
+        if (dbg) {
+                fprintf(dbg, "==== virtio_net__post_copy returning 0 ====\n");
+                fflush(dbg);
+                fclose(dbg);
+        }
+
+        return 0;
+}
+virtio_dev_post_copy(virtio_net__post_copy);
 
 int virtio_net__exit(struct kvm *kvm)
 {

@@ -18,3 +18,22 @@ initrd*
 *.img
 *.raw
 *.cpio
+
+# VM / disk images
+*.qcow2
+*.vdi
+*.iso
+*.Zone.Identifier
+
+# Local tool/cache files
+.codex/
+
+# Build/test binaries
+counter
+
+# Debug/log output
+*.log
+fork-debug.txt
+
+.codex 
+*:Zone.Identifier

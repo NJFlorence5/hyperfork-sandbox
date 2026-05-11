@@ -285,25 +285,11 @@ static u64 host_ram_size(void)
 
 /*
  * If user didn't specify how much memory it wants to allocate for the guest,
- * avoid filling the whole host RAM.
+ * default each VM to 4 GiB. Explicit -m/--mem values still override this.
  */
-#define RAM_SIZE_RATIO		0.8
-
-static u64 get_ram_size(int nr_cpus)
+static u64 get_ram_size(void)
 {
-	u64 available;
-	u64 ram_size;
-
-	ram_size	= 64 * (nr_cpus + 3);
-
-	available	= host_ram_size() * RAM_SIZE_RATIO;
-	if (!available)
-		available = MIN_RAM_SIZE_MB;
-
-	if (ram_size > available)
-		ram_size	= available;
-
-	return ram_size;
+	return DEFAULT_RAM_SIZE_MB;
 }
 
 static const char *find_kernel(void)
@@ -550,7 +536,7 @@ static struct kvm *kvm_cmd_run_init(int argc, const char **argv)
 		kvm->cfg.nrcpus = nr_online_cpus;
 
 	if (!kvm->cfg.ram_size)
-		kvm->cfg.ram_size = get_ram_size(kvm->cfg.nrcpus);
+		kvm->cfg.ram_size = get_ram_size();
 
 	if (kvm->cfg.ram_size > host_ram_size())
 		pr_warning("Guest memory size %lluMB exceeds host physical RAM size %lluMB",

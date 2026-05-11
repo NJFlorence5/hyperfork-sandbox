@@ -107,7 +107,13 @@ int init_list__pre_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 
 	for (i = 0; i < ARRAY_SIZE(init_lists); i++)
 		hlist_for_each_entry(t, &pre_copy_lists[i], n) {
+			u64 copy_start_ns = kvm__time_ns();
+
+			kvm__fork_trace(ctxt, "pre-copy[%u]: %s start",
+				i, t->fn_name);
 			r = t->copy(kvm, ctxt);
+			kvm__fork_trace(ctxt, "pre-copy[%u]: %s complete duration=%.3f ms",
+				i, t->fn_name, kvm__elapsed_ms(copy_start_ns));
 			if (r < 0) {
 				pr_warning("%s failed.\n", t->fn_name);
 				goto fail;
@@ -125,7 +131,13 @@ int init_list__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 
 	for (i = 0; i < ARRAY_SIZE(init_lists); i++)
 		hlist_for_each_entry(t, &post_copy_lists[i], n) {
+			u64 copy_start_ns = kvm__time_ns();
+
+			kvm__fork_trace(ctxt, "child post-copy[%u]: %s start",
+				i, t->fn_name);
 			r = t->copy(kvm, ctxt);
+			kvm__fork_trace(ctxt, "child post-copy[%u]: %s complete duration=%.3f ms",
+				i, t->fn_name, kvm__elapsed_ms(copy_start_ns));
 			if (r < 0) {
 				pr_warning("%s failed.\n", t->fn_name);
 				goto fail;
@@ -143,7 +155,13 @@ int init_list__post_copy_parent(struct kvm *kvm, struct pre_copy_context *ctxt)
 
 	for (i = 0; i < ARRAY_SIZE(init_lists); i++)
 		hlist_for_each_entry(t, &post_copy_parent_lists[i], n) {
+			u64 copy_start_ns = kvm__time_ns();
+
+			kvm__fork_trace(ctxt, "parent post-copy[%u]: %s start",
+				i, t->fn_name);
 			r = t->copy(kvm, ctxt);
+			kvm__fork_trace(ctxt, "parent post-copy[%u]: %s complete duration=%.3f ms",
+				i, t->fn_name, kvm__elapsed_ms(copy_start_ns));
 			if (r < 0) {
 				pr_warning("%s failed.\n", t->fn_name);
 				goto fail;
