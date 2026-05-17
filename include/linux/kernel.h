@@ -3,6 +3,7 @@
 #define KVM__LINUX_KERNEL_H_
 
 #define DIV_ROUND_UP(n,d) (((n) + (d) - 1) / (d))
+#define __KERNEL_DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
 #define ALIGN(x,a)		__ALIGN_MASK(x,(typeof(x))(a)-1)
 #define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
