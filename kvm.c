@@ -6,6 +6,27 @@
 #include "kvm/kvm-cpu.h"
 #include "kvm/kvm-ipc.h"
 #include "kvm/builtin-run.h"
+#include "kvm/8250-serial.h"
+
+/* Debug log file for child VM fork diagnostics */
+FILE *hyperfork_debug_log = NULL;
+int hyperfork_child_octet = 0;
+
+void hyperfork_dbg(const char *fmt, ...)
+{
+	if (!hyperfork_debug_log)
+		return;
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	fprintf(hyperfork_debug_log, "[%ld.%06ld] [pid=%d] ",
+		ts.tv_sec, ts.tv_nsec / 1000, getpid());
+	va_list args;
+	va_start(args, fmt);
+	vfprintf(hyperfork_debug_log, fmt, args);
+	va_end(args);
+	fprintf(hyperfork_debug_log, "\n");
+	fflush(hyperfork_debug_log);
+}
 
 #include <linux/kernel.h>
 #include <linux/kvm.h>
@@ -711,13 +732,27 @@ void kvm__fork(struct kvm *kvm, bool detach_term, char *new_name)
 		die("Failed to fork process");
 	} else if (pid == 0) {
 		// Child
+		{
+			char logpath[128];
+			snprintf(logpath, sizeof(logpath),
+				"/tmp/hyperfork_child_%d.log", getpid());
+			hyperfork_debug_log = fopen(logpath, "w");
+		}
+		hyperfork_dbg("===== CHILD FORK START =====");
+		hyperfork_dbg("vm_fd=%d sys_fd=%d nrcpus=%d ram_size=%llu",
+			kvm->vm_fd, kvm->sys_fd, kvm->nrcpus,
+			(unsigned long long)kvm->ram_size);
+
 		kvm__fork_trace(&ctxt, "child fork return");
 		sprintf(name, "guest-%u", getpid());
 		kvm->cfg.guest_name = name;
 
+		hyperfork_dbg("starting post_copy...");
 		if (init_list__post_copy(kvm, &ctxt) < 0)
 			die ("Post copy failed");
 		kvm__fork_trace(&ctxt, "child post-copy complete");
+		hyperfork_dbg("post_copy complete. vm_fd=%d sys_fd=%d",
+			kvm->vm_fd, kvm->sys_fd);
 
 		/* Make the PGID unique from the parent such that we can
 		 * re-attach the process to a new terminal window. */
@@ -727,10 +762,20 @@ void kvm__fork(struct kvm *kvm, bool detach_term, char *new_name)
 		kvm__fork_trace(&ctxt, "child pgid set");
 
 		/* Unpause the child VM */
+		hyperfork_dbg("setting vm_state=RUNNING, calling kvm__continue");
 		kvm->vm_state = KVM_VMSTATE_RUNNING;
 		kvm__continue(kvm);
 		kvm__fork_trace(&ctxt, "child vm resumed");
+
+		if (hyperfork_child_octet > 0) {
+			char cmd[128];
+			snprintf(cmd, sizeof(cmd), "\n/root/vminit.sh %d\n", hyperfork_child_octet);
+			hyperfork_dbg("injecting network config: %s", cmd);
+			serial8250__inject_string(kvm, cmd);
+		}
+
 		kvm__fork_trace_separator(&ctxt, "child fork trace complete");
+		hyperfork_dbg("vm resumed, starting VCPU threads via kvm_cmd_run_work");
 
 		/* Start VCPU threads and take over duties of main lkvm run thread.
 		 * We have already created another kvm_ipc thread, so here
@@ -739,8 +784,11 @@ void kvm__fork(struct kvm *kvm, bool detach_term, char *new_name)
 		 * exiting gracefully. */
 
 		int ret = kvm_cmd_run_work(kvm);
+		hyperfork_dbg("kvm_cmd_run_work returned ret=%d", ret);
 		kvm_cmd_run_exit(kvm, ret);
 
+		hyperfork_dbg("===== CHILD EXIT =====");
+		if (hyperfork_debug_log) fclose(hyperfork_debug_log);
 		exit(0);
 	} else {
 		kvm__fork_trace(&ctxt, "parent fork return child_pid=%d", pid);

@@ -14,6 +14,9 @@
 #include "kvm/kvm.h"
 #include "kvm/kvm-cpu.h"
 
+extern FILE *hyperfork_debug_log;
+extern void hyperfork_dbg(const char *fmt, ...);
+
 #define TERM_FD_IN      0
 #define TERM_FD_OUT     1
 
@@ -149,12 +152,15 @@ static void term_set_tty(int term)
 
 	orig_term.c_lflag &= ~(ICANON | ECHO | ISIG);
 
-	if (openpty(&master, &slave, new_pty, &orig_term, NULL) < 0)
+	if (openpty(&master, &slave, new_pty, &orig_term, NULL) < 0) {
+		hyperfork_dbg("term_set_tty(%d): openpty FAILED errno=%d", term, errno);
 		return;
+	}
 
 	close(slave);
 
 	pr_info("Assigned terminal %d to pty %s\n", term, new_pty);
+	hyperfork_dbg("term_set_tty(%d): assigned pty=%s master_fd=%d", term, new_pty, master);
 
 	term_fds[term][TERM_FD_IN] = term_fds[term][TERM_FD_OUT] = master;
 }
@@ -192,13 +198,22 @@ int tty_parser(const struct option *opt, const char *arg, int unset)
 
 static int term__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 {
-    if (ctxt->detach_term)
-        term_detach(0);
-    else
-        term_set_tty(0);
+    hyperfork_dbg("term__post_copy: detach_term=%d", ctxt->detach_term);
 
+    if (ctxt->detach_term) {
+        hyperfork_dbg("term__post_copy: detaching terminal (output -> /dev/null)");
+        term_detach(0);
+    } else {
+        hyperfork_dbg("term__post_copy: creating new PTY for console");
+        term_set_tty(0);
+    }
+
+    hyperfork_dbg("term__post_copy: creating term_poll_thread");
     if (pthread_create(&term_poll_thread, NULL, term_poll_thread_loop, kvm))
         die("Unable to create console input poll thread\n");
+
+    hyperfork_dbg("term__post_copy: term_fds[0] IN=%d OUT=%d",
+        term_fds[0][TERM_FD_IN], term_fds[0][TERM_FD_OUT]);
 
     signal(SIGTERM, term_sig_cleanup);
     return 0;

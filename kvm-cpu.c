@@ -16,6 +16,10 @@
 #include <errno.h>
 #include <stdio.h>
 
+extern FILE *hyperfork_debug_log;
+extern void hyperfork_dbg(const char *fmt, ...);
+
+
 extern __thread struct kvm_cpu *current_kvm_cpu;
 
 int __attribute__((weak)) kvm_cpu__get_endianness(struct kvm_cpu *vcpu)
@@ -144,6 +148,7 @@ void kvm_cpu__run_on_all_cpus(struct kvm *kvm, struct kvm_cpu_task *task)
 int kvm_cpu__start(struct kvm_cpu *cpu)
 {
 	sigset_t sigset;
+	unsigned long run_count = 0;
 
 	sigemptyset(&sigset);
 	sigaddset(&sigset, SIGALRM);
@@ -161,6 +166,9 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 	if (cpu->kvm->cfg.single_step)
 		kvm_cpu__enable_singlestep(cpu);
 
+	hyperfork_dbg("VCPU %lu entering run loop (is_running=%d, vcpu_fd=%d)",
+		cpu->cpu_id, cpu->is_running, cpu->vcpu_fd);
+
 	while (cpu->is_running) {
 		if (cpu->needs_nmi) {
 			kvm_cpu__arch_nmi(cpu);
@@ -170,7 +178,24 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 		if (cpu->task)
 			kvm_cpu__run_task(cpu);
 
+		if (run_count < 20 || (run_count % 10000 == 0)) {
+			hyperfork_dbg("VCPU %lu KVM_RUN #%lu about to enter",
+				cpu->cpu_id, run_count);
+		}
+
 		kvm_cpu__run(cpu);
+
+		if (run_count < 20 || (run_count % 10000 == 0)) {
+			const char *reason_str = "unknown";
+			if (cpu->kvm_run->exit_reason <= 35)
+				reason_str = kvm_exit_reasons[cpu->kvm_run->exit_reason]
+					? kvm_exit_reasons[cpu->kvm_run->exit_reason]
+					: "unknown";
+			hyperfork_dbg("VCPU %lu KVM_RUN #%lu exit_reason=%u (%s)",
+				cpu->cpu_id, run_count,
+				cpu->kvm_run->exit_reason, reason_str);
+		}
+		run_count++;
 
 		switch (cpu->kvm_run->exit_reason) {
 		case KVM_EXIT_UNKNOWN:
@@ -182,6 +207,15 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 		case KVM_EXIT_IO: {
 			bool ret;
 
+			if (run_count <= 20) {
+				hyperfork_dbg("VCPU %lu IO port=0x%x dir=%s size=%d count=%d",
+					cpu->cpu_id,
+					cpu->kvm_run->io.port,
+					cpu->kvm_run->io.direction ? "out" : "in",
+					cpu->kvm_run->io.size,
+					cpu->kvm_run->io.count);
+			}
+
 			ret = kvm_cpu__emulate_io(cpu,
 						  cpu->kvm_run->io.port,
 						  (u8 *)cpu->kvm_run +
@@ -190,8 +224,11 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 						  cpu->kvm_run->io.size,
 						  cpu->kvm_run->io.count);
 
-			if (!ret)
+			if (!ret) {
+				hyperfork_dbg("VCPU %lu IO PANIC port=0x%x",
+					cpu->cpu_id, cpu->kvm_run->io.port);
 				goto panic_kvm;
+			}
 			break;
 		}
 		case KVM_EXIT_MMIO: {
@@ -209,21 +246,31 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 						    cpu->kvm_run->mmio.len,
 						    cpu->kvm_run->mmio.is_write);
 
-			if (!ret)
+			if (!ret) {
+				hyperfork_dbg("VCPU %lu MMIO PANIC addr=0x%llx",
+					cpu->cpu_id,
+					(unsigned long long)cpu->kvm_run->mmio.phys_addr);
 				goto panic_kvm;
+			}
 			break;
 		}
 		case KVM_EXIT_INTR:
 			if (cpu->is_running)
 				break;
+			hyperfork_dbg("VCPU %lu EXIT_INTR with is_running=false, exiting",
+				cpu->cpu_id);
 			goto exit_kvm;
 		case KVM_EXIT_SHUTDOWN:
+			hyperfork_dbg("VCPU %lu EXIT_SHUTDOWN", cpu->cpu_id);
 			goto exit_kvm;
 		case KVM_EXIT_SYSTEM_EVENT:
 			/*
 			 * Print the type of system event and
 			 * treat all system events as shutdown request.
 			 */
+			hyperfork_dbg("VCPU %lu SYSTEM_EVENT type=%d",
+				cpu->cpu_id,
+				cpu->kvm_run->system_event.type);
 			switch (cpu->kvm_run->system_event.type) {
 			default:
 				pr_warning("unknown system event type %d",
@@ -243,6 +290,8 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 		default: {
 			bool ret;
 
+			hyperfork_dbg("VCPU %lu unhandled exit_reason=%u",
+				cpu->cpu_id, cpu->kvm_run->exit_reason);
 			ret = kvm_cpu__handle_exit(cpu);
 			if (!ret)
 				goto panic_kvm;
@@ -252,10 +301,14 @@ int kvm_cpu__start(struct kvm_cpu *cpu)
 		kvm_cpu__handle_coalesced_mmio(cpu);
 	}
 
+	hyperfork_dbg("VCPU %lu is_running became false, exiting loop (run_count=%lu)",
+		cpu->cpu_id, run_count);
+
 exit_kvm:
 	return 0;
 
 panic_kvm:
+	hyperfork_dbg("VCPU %lu PANIC exit (run_count=%lu)", cpu->cpu_id, run_count);
 	return 1;
 }
 

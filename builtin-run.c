@@ -63,6 +63,10 @@ static int  kvm_run_wrapper;
 
 bool do_debug_print = false;
 
+/* Debug logging from kvm.c */
+extern FILE *hyperfork_debug_log;
+extern void hyperfork_dbg(const char *fmt, ...);
+
 static const char * const run_usage[] = {
 	"lkvm run [<options>] [<kernel image>]",
 	NULL
@@ -194,9 +198,14 @@ static void *kvm_cpu_thread(void *arg)
 	sprintf(name, "kvm-vcpu-%lu", current_kvm_cpu->cpu_id);
 	kvm__set_thread_name(name);
 
+	hyperfork_dbg("VCPU thread %lu started, entering kvm_cpu__start",
+		current_kvm_cpu->cpu_id);
+
 	if (kvm_cpu__start(current_kvm_cpu))
 		goto panic_kvm;
 
+	hyperfork_dbg("VCPU thread %lu exiting normally",
+		current_kvm_cpu->cpu_id);
 	return (void *) (intptr_t) 0;
 
 panic_kvm:
@@ -670,15 +679,22 @@ int kvm_cmd_run_work(struct kvm *kvm)
 {
 	int i;
 
+	hyperfork_dbg("kvm_cmd_run_work: creating %d VCPU threads", kvm->nrcpus);
 	for (i = 0; i < kvm->nrcpus; i++) {
+		hyperfork_dbg("  creating thread for VCPU %d (vcpu_fd=%d, is_running=%d, state_init=%d)",
+			i, kvm->cpus[i]->vcpu_fd,
+			kvm->cpus[i]->is_running,
+			kvm->cpus[i]->state_initialized);
 		if (pthread_create(&kvm->cpus[i]->thread, NULL, kvm_cpu_thread, kvm->cpus[i]) != 0)
 			die("unable to create KVM VCPU thread");
 	}
+	hyperfork_dbg("kvm_cmd_run_work: all threads created, joining VCPU 0");
 
 	/* Only VCPU #0 is going to exit by itself when shutting down */
 	if (pthread_join(kvm->cpus[0]->thread, NULL) != 0)
 		die("unable to join with vcpu 0");
 
+	hyperfork_dbg("kvm_cmd_run_work: VCPU 0 joined, calling kvm_cpu__exit");
 	return kvm_cpu__exit(kvm);
 }
 

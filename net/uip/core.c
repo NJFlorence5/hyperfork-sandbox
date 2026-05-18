@@ -58,6 +58,15 @@ int uip_tx(struct iovec *iov, u16 out, struct uip_info *info)
 	 */
 	proto = ntohs(eth->type);
 
+	{
+		FILE *f = fopen("/tmp/uip_debug.log", "a");
+		if (f) {
+			fprintf(f, "uip_tx: proto=0x%04x eth_len=%d out=%d\n", proto, eth_len, out);
+			fflush(f);
+			fclose(f);
+		}
+	}
+
 	switch (proto) {
 	case UIP_ETH_P_ARP:
 		uip_tx_do_arp(&arg);
@@ -80,10 +89,31 @@ int uip_rx(struct iovec *iov, u16 in, struct uip_info *info)
 	struct uip_buf *buf;
 	int len;
 
+	{
+		FILE *f = fopen("/tmp/uip_debug.log", "a");
+		if (f) {
+			fprintf(f, "uip_rx: waiting for used buf (used_nr=%d)\n", info->buf_used_nr);
+			fflush(f);
+			fclose(f);
+		}
+	}
+
 	/*
 	 * Sleep until there is a buffer for guest
 	 */
 	buf = uip_buf_get_used(info);
+
+	{
+		FILE *f = fopen("/tmp/uip_debug.log", "a");
+		if (f) {
+			fprintf(f, "uip_rx: got buf id=%d vnet_len=%d eth_len=%d\n",
+				buf ? buf->id : -1,
+				buf ? buf->vnet_len : 0,
+				buf ? buf->eth_len : 0);
+			fflush(f);
+			fclose(f);
+		}
+	}
 
 	memcpy_toiovecend(iov, buf->vnet, 0, buf->vnet_len);
 	memcpy_toiovecend(iov, buf->eth, buf->vnet_len, buf->eth_len);
