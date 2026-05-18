@@ -246,14 +246,75 @@ int kvm_cpu__arch_post_copy(struct kvm_cpu *vcpu, unsigned long cpu_id,
 	if (ioctl(vcpu->vcpu_fd, KVM_SET_LAPIC, &ctxt->lapic[cpu_id]) < 0)
 		die_perror("KVM_SET_LAPIC failed");
 
+	/*
+	 * Inject a pending LAPIC timer interrupt after restoring state.
+	 *
+	 * The guest uses TSC-deadline mode for the LAPIC timer. After fork,
+	 * the IA32_TSC_DEADLINE MSR value from the parent is in the past
+	 * relative to the child's TSC, but KVM doesn't automatically fire
+	 * the interrupt for a deadline that's already passed. Without a
+	 * timer interrupt, halted VCPUs never wake up and the guest
+	 * scheduler never gets a tick.
+	 *
+	 * Fix: Set the IRR (Interrupt Request Register) bit for the timer
+	 * vector in the LAPIC state. This makes KVM think a timer interrupt
+	 * is pending, so it will be delivered on the next KVM_RUN, waking
+	 * the VCPU from HLT and kick-starting the guest scheduler.
+	 */
+	{
+		struct kvm_lapic_state lapic_armed;
+		if (ioctl(vcpu->vcpu_fd, KVM_GET_LAPIC, &lapic_armed) == 0) {
+			/* Extract timer vector from LVT Timer register at 0x320 */
+			u32 lvt_timer = *(u32 *)&lapic_armed.regs[0x320];
+			u8 timer_vector = lvt_timer & 0xFF;
+			u16 timer_masked = (lvt_timer >> 16) & 1;
+
+			if (timer_vector > 0 && !timer_masked) {
+				/*
+				 * Set the corresponding bit in the IRR
+				 * (Interrupt Request Register, offsets 0x200-0x270).
+				 * Each 32-bit register covers 32 vectors.
+				 */
+				int irr_reg = 0x200 + (timer_vector / 32) * 0x10;
+				int irr_bit = timer_vector % 32;
+				u32 *irr = (u32 *)&lapic_armed.regs[irr_reg];
+				*irr |= (1u << irr_bit);
+
+				if (ioctl(vcpu->vcpu_fd, KVM_SET_LAPIC, &lapic_armed) < 0)
+					die_perror("KVM_SET_LAPIC (timer inject) failed");
+			}
+		}
+	}
+
 	if (ioctl(vcpu->vcpu_fd, KVM_SET_XCRS, &ctxt->xcrs[cpu_id]) < 0)
 		die_perror("KVM_SET_XCRS failed");
 
-	if (ioctl(vcpu->vcpu_fd, KVM_SET_MP_STATE, &ctxt->mp_state[cpu_id]) < 0)
-		die_perror("KVM_SET_MP_STATE failed");
+	/*
+	 * Force all VCPUs to RUNNABLE state after fork.
+	 */
+	{
+		struct kvm_mp_state mp_runnable = { .mp_state = KVM_MP_STATE_RUNNABLE };
+		if (ioctl(vcpu->vcpu_fd, KVM_SET_MP_STATE, &mp_runnable) < 0)
+			die_perror("KVM_SET_MP_STATE (RUNNABLE) failed");
+	}
 
 	if (ioctl(vcpu->vcpu_fd, KVM_SET_DEBUGREGS, &ctxt->debugregs[cpu_id]) < 0)
 		die_perror("KVM_SET_DEBUGREGS failed");
+
+	/* Log the guest RIP, MP state, and LAPIC timer for debugging */
+	{
+		extern FILE *hyperfork_debug_log;
+		extern void hyperfork_dbg(const char *fmt, ...);
+		u32 *timer_icr = (u32 *)&ctxt->lapic[cpu_id].regs[0x380];
+		u32 *timer_lvt = (u32 *)&ctxt->lapic[cpu_id].regs[0x320];
+		u32 *timer_dcr = (u32 *)&ctxt->lapic[cpu_id].regs[0x3E0];
+		hyperfork_dbg("VCPU %lu post_copy: rip=0x%llx rsp=0x%llx orig_mp_state=%u timer_icr=%u lvt=0x%x dcr=0x%x",
+			cpu_id,
+			(unsigned long long)ctxt->regs[cpu_id].rip,
+			(unsigned long long)ctxt->regs[cpu_id].rsp,
+			ctxt->mp_state[cpu_id].mp_state,
+			*timer_icr, *timer_lvt, *timer_dcr);
+	}
 
 	/*
 	if (ioctl(vcpu->vcpu_fd, KVM_KVMCLOCK_CTRL, 0) < 0)
