@@ -2,6 +2,7 @@
 
 #include <linux/kernel.h>
 #include <linux/list.h>
+#include <linux/virtio_net.h>
 
 struct uip_buf *uip_buf_get_used(struct uip_info *info)
 {
@@ -105,6 +106,31 @@ struct uip_buf *uip_buf_clone(struct uip_tx_arg *arg)
 	memcpy(buf->eth, arg->eth, arg->eth_len);
 	buf->vnet_len	= arg->vnet_len;
 	buf->eth_len	= arg->eth_len;
+
+	// Let's modify the cloned vnet header.
+	// Since we compute full checksums in UIP (e.g. in ICMP, TCP, UDP),
+	// the RX packet we are sending to the guest has a 100% correct checksum.
+	// Therefore, we should either set flags = VIRTIO_NET_HDR_F_DATA_VALID
+	// or flags = 0, and clear gso_type.
+	if (buf->vnet_len >= 10) {
+		struct virtio_net_hdr *hdr = (struct virtio_net_hdr *)buf->vnet;
+		struct virtio_net_hdr *orig_hdr = (struct virtio_net_hdr *)arg->vnet;
+		
+		FILE *f = fopen("/tmp/uip_debug.log", "a");
+		if (f) {
+			fprintf(f, "uip_buf_clone: orig_flags=%d orig_gso=%d orig_csum_start=%d orig_csum_offset=%d\n",
+				orig_hdr->flags, orig_hdr->gso_type, orig_hdr->csum_start, orig_hdr->csum_offset);
+			fflush(f);
+			fclose(f);
+		}
+
+		hdr->flags = VIRTIO_NET_HDR_F_DATA_VALID;
+		hdr->gso_type = VIRTIO_NET_HDR_GSO_NONE;
+		hdr->hdr_len = 0;
+		hdr->gso_size = 0;
+		hdr->csum_start = 0;
+		hdr->csum_offset = 0;
+	}
 
 	eth2		= (struct uip_eth *)buf->eth;
 	eth2->src	= info->host_mac;

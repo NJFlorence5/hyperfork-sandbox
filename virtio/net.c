@@ -73,6 +73,7 @@ struct net_dev {
 
 static LIST_HEAD(ndevs);
 static int compat_id = -1;
+static int fork_mac_counter = 0;
 
 #define MAX_PACKET_SIZE 65550
 
@@ -910,6 +911,7 @@ int netdev_parser(const struct option *opt, const char *arg, int unset)
 	};
 
 	str_to_mac(DEFAULT_GUEST_MAC, p.guest_mac);
+	str_to_mac(DEFAULT_HOST_MAC, p.host_mac);
 	p.guest_mac[5] += kvm->cfg.num_net_devices;
 
 	while (cur) {
@@ -1043,6 +1045,13 @@ int virtio_net__init(struct kvm *kvm)
 }
 virtio_dev_init(virtio_net__init);
 
+int virtio_net__pre_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
+{
+	fork_mac_counter++;
+	return 0;
+}
+virtio_dev_pre_copy(virtio_net__pre_copy);
+
 int virtio_net__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 {
         struct net_dev *ndev;
@@ -1153,7 +1162,6 @@ int virtio_net__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
                         }
 
                         {
-			    static int fork_mac_counter = 1;
 			    unsigned char mac[6];
 
     			/* base MAC */
@@ -1162,7 +1170,7 @@ int virtio_net__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
     			mac[2] = 0x15;
     			mac[3] = 0x15;
     			mac[4] = 0x15;
-    			mac[5] = 0x15 + fork_mac_counter++;
+    			mac[5] = 0x02 + fork_mac_counter;
 
     			int j;
     			for (j = 0; j < 6; j++) {
@@ -1172,6 +1180,7 @@ int virtio_net__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
         			if (ndev->params)
             			ndev->params->guest_mac[j] = mac[j];
     			}
+    			hyperfork_child_octet = mac[5];
 
     			if (dbg) {
         			fprintf(dbg,

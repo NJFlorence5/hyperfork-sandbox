@@ -206,6 +206,7 @@ int kvm__for_each_mem_bank(struct kvm *kvm, enum kvm_mem_type type,
 void kvm__dump_mem(struct kvm *kvm, unsigned long addr, unsigned long size, int debug_fd);
 
 extern const char *kvm_exit_reasons[];
+extern int hyperfork_child_octet;
 
 static inline bool host_ptr_in_ram(struct kvm *kvm, void *p)
 {

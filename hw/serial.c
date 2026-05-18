@@ -224,6 +224,22 @@ void serial8250__inject_sysrq(struct kvm *kvm, char sysrq)
 	sysrq_pending = sysrq;
 }
 
+void serial8250__inject_string(struct kvm *kvm, const char *str)
+{
+	struct serial8250_device *dev = &devices[0];
+
+	mutex_lock(&dev->mutex);
+
+	while (*str && dev->rxcnt < FIFO_LEN) {
+		dev->rxbuf[dev->rxcnt++] = *str++;
+		dev->lsr |= UART_LSR_DR;
+	}
+
+	serial8250_update_irq(kvm, dev);
+
+	mutex_unlock(&dev->mutex);
+}
+
 static bool serial8250_out(struct ioport *ioport, struct kvm_cpu *vcpu, u16 port,
 			   void *data, int size)
 {

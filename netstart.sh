@@ -26,6 +26,12 @@ sudo ip link set "$BRIDGE" type bridge stp_state 0 forward_delay 0
 sudo ip addr add "$HOST_IP" dev "$BRIDGE"
 sudo ip link set "$BRIDGE" up
 
+# Disable reverse-path filtering on the bridge. With rp_filter=2 (confirmed
+# on this host), the kernel drops packets whose source IP has no confirmed
+# route yet — exactly the window between VM fork and vm-init.sh running.
+sudo sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null
+sudo sysctl -w "net.ipv4.conf.${BRIDGE}.rp_filter=0" >/dev/null
+
 echo "[+] Network start complete"
 echo
 ip addr show "$BRIDGE"

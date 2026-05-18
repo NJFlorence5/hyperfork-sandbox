@@ -8,6 +8,7 @@ int serial8250__init(struct kvm *kvm);
 int serial8250__exit(struct kvm *kvm);
 void serial8250__update_consoles(struct kvm *kvm);
 void serial8250__inject_sysrq(struct kvm *kvm, char sysrq);
+void serial8250__inject_string(struct kvm *kvm, const char *str);
 int serial8250__pre_copy(struct kvm *kvm, struct pre_copy_context *ctxt);
 int serial8250__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt);
 

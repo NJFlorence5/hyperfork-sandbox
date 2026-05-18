@@ -20,11 +20,6 @@ fi
 for ((i = start_index; i < start_index + count; i++)); do
 	child_vm="${child_prefix}${i}"
 
-	echo "Preparing tap for ${child_vm}"
-	./addtap.sh
-
-	sleep 1
-
 	echo "Forking ${parent_vm} -> ${child_vm}"
 	sudo ./lkvm fork -n "${parent_vm}" -d "${child_vm}"
 
