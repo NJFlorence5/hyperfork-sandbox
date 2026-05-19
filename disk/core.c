@@ -44,6 +44,8 @@ int disk_img_name_parser(const struct option *opt, const char *arg, int unset)
 				kvm->cfg.disk_image[kvm->cfg.image_count].readonly = true;
 			else if (strncmp(sep + 1, "direct", 6) == 0)
 				kvm->cfg.disk_image[kvm->cfg.image_count].direct = true;
+			else if (strncmp(sep + 1, "clone", 5) == 0)
+				kvm->cfg.disk_image[kvm->cfg.image_count].clone = true;
 			*sep = 0;
 			cur = sep + 1;
 		}
@@ -121,7 +123,7 @@ struct disk_image *disk_image__new(int fd, u64 size,
 	return disk;
 }
 
-static struct disk_image *disk_image__open(const char *filename, bool readonly, bool direct)
+static struct disk_image *disk_image__open(const char *filename, bool readonly, bool direct, bool clone)
 {
 	struct disk_image *disk;
 	struct stat st;
@@ -139,8 +141,10 @@ static struct disk_image *disk_image__open(const char *filename, bool readonly, 
 
 	/* blk device ?*/
 	disk = blkdev__probe(filename, flags, &st);
-	if (!IS_ERR_OR_NULL(disk))
+	if (!IS_ERR_OR_NULL(disk)) {
+		disk->clone = clone;
 		return disk;
+	}
 
 	fd = open(filename, flags);
 	if (fd < 0)
@@ -155,8 +159,10 @@ static struct disk_image *disk_image__open(const char *filename, bool readonly, 
 
 	/* raw image ?*/
 	disk = raw_image__probe(fd, &st, readonly);
-	if (!IS_ERR_OR_NULL(disk))
+	if (!IS_ERR_OR_NULL(disk)) {
+		disk->clone = clone;
 		return disk;
+	}
 
 	if (close(fd) < 0)
 		pr_warning("close() failed");
@@ -172,6 +178,7 @@ static struct disk_image **disk_image__open_all(struct kvm *kvm)
 	const char *tpgt;
 	bool readonly;
 	bool direct;
+	bool clone;
 	void *err;
 	int i;
 	struct disk_image_params *params = (struct disk_image_params *)&kvm->cfg.disk_image;
@@ -190,6 +197,7 @@ static struct disk_image **disk_image__open_all(struct kvm *kvm)
 		filename = params[i].filename;
 		readonly = params[i].readonly;
 		direct = params[i].direct;
+		clone = params[i].clone;
 		wwpn = params[i].wwpn;
 		tpgt = params[i].tpgt;
 
@@ -205,7 +213,7 @@ static struct disk_image **disk_image__open_all(struct kvm *kvm)
 		if (!filename)
 			continue;
 
-		disks[i] = disk_image__open(filename, readonly, direct);
+		disks[i] = disk_image__open(filename, readonly, direct, clone);
 		if (IS_ERR_OR_NULL(disks[i])) {
 			pr_err("Loading disk image '%s' failed", filename);
 			err = disks[i];
@@ -353,7 +361,13 @@ dev_base_init(disk_image__init);
 
 int disk_image__post_copy(struct kvm *kvm, struct pre_copy_context *ctxt)
 {
-  return 0;
+	int i;
+	for (i = 0; i < kvm->nr_disks; i++) {
+		struct disk_image *disk = kvm->disks[i];
+		if (disk && disk->ops->post_copy)
+			disk->ops->post_copy(disk, kvm);
+	}
+	return 0;
 }
 dev_base_post_copy(disk_image__post_copy);
 

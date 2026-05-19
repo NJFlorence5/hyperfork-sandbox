@@ -40,6 +40,7 @@ struct disk_image_operations {
 			int iovcount, void *param);
 	int (*flush)(struct disk_image *disk);
 	int (*close)(struct disk_image *disk);
+	int (*post_copy)(struct disk_image *disk, struct kvm *kvm);
 };
 
 struct disk_image_params {
@@ -52,6 +53,7 @@ struct disk_image_params {
 	const char *tpgt;
 	bool readonly;
 	bool direct;
+	bool clone;
 };
 
 struct disk_image {
@@ -69,6 +71,7 @@ struct disk_image {
 	const char			*wwpn;
 	const char			*tpgt;
 	int				debug_iodelay;
+	bool				clone;
 };
 
 int disk_img_name_parser(const struct option *opt, const char *arg, int unset);

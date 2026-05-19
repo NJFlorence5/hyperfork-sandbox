@@ -88,12 +88,52 @@ int raw_image__close(struct disk_image *disk)
 	return ret;
 }
 
+int raw_image__post_copy(struct disk_image *disk, struct kvm *kvm)
+{
+	char proc_fd_path[PATH_MAX];
+	char orig_path[PATH_MAX];
+	char new_path[PATH_MAX];
+	int dst_fd;
+
+	if (!disk->clone)
+		return 0;
+
+	fsync(disk->fd);
+
+	snprintf(proc_fd_path, sizeof(proc_fd_path), "/proc/self/fd/%d", disk->fd);
+	ssize_t len = readlink(proc_fd_path, orig_path, sizeof(orig_path) - 1);
+	if (len > 0) {
+		orig_path[len] = '\0';
+		snprintf(new_path, sizeof(new_path), "%s_child_%d.img", orig_path, getpid());
+	} else {
+		snprintf(new_path, sizeof(new_path), "clone_child_%d.img", getpid());
+	}
+
+	dst_fd = open(new_path, O_RDWR | O_CREAT, 0644);
+	if (dst_fd >= 0) {
+		if (ioctl(dst_fd, FICLONE, disk->fd) < 0) {
+			pr_warning("FICLONE failed (errno=%d), falling back to full copy. This may take a while.", errno);
+			lseek(disk->fd, 0, SEEK_SET);
+			char buf[65536];
+			ssize_t n;
+			while ((n = read(disk->fd, buf, sizeof(buf))) > 0) {
+				write_in_full(dst_fd, buf, n);
+			}
+		}
+		close(disk->fd);
+		disk->fd = dst_fd;
+	}
+
+	return 0;
+}
+
 /*
  * multiple buffer based disk image operations
  */
 static struct disk_image_operations raw_image_regular_ops = {
 	.read	= raw_image__read,
 	.write	= raw_image__write,
+	.post_copy = raw_image__post_copy,
 };
 
 struct disk_image_operations ro_ops = {
